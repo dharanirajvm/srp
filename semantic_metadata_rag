@@ -1,0 +1,120 @@
+import fitz
+import faiss
+import numpy as np
+import pandas as pd
+import nltk
+import spacy
+from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+
+# Download required NLTK resources
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('punkt_tab')
+# Load pre-trained model and stopwords
+nlp = spacy.load("en_core_web_sm")
+stop_words = set(nltk.corpus.stopwords.words("english"))
+
+# Load metadata from CSV file
+metadata_df = pd.read_csv("metadata.csv")
+metadata_dict = metadata_df.set_index("filename").to_dict(orient="index")
+
+# Load FAISS index and document filenames
+index = faiss.read_index("faiss_index.bin")
+paper_files = np.load("paper_files.npy", allow_pickle=True)
+
+# Load Sentence Transformer model
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Load LLM (Llama 2 or GPT-based model for explanation)
+llm_pipeline = pipeline("text-generation", model="meta-llama/Llama-2-7b-chat-hf")
+
+def extract_text_from_pdf(pdf_path):
+    """Extracts text from a single PDF."""
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text("text") + "\n"
+    return text
+
+def preprocess_text(text):
+    """Tokenizes, removes stopwords, and lemmatizes text."""
+    tokens = nltk.word_tokenize(text.lower())
+    filtered_tokens = [word for word in tokens if word.isalnum() and word not in stop_words]
+    
+    doc = nlp(" ".join(filtered_tokens))
+    lemmatized_text = " ".join([token.lemma_ for token in doc])
+    
+    return lemmatized_text
+
+def chunk_text(text, chunk_size=500, chunk_overlap=50):
+    """Splits text into overlapping chunks."""
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size - chunk_overlap):
+        chunks.append(" ".join(words[i:i + chunk_size]))
+    return chunks
+
+def retrieve_relevant_chunks(thesis_text, retrieved_text):
+    """Retrieves the most relevant chunks from a research paper for RAG."""
+    chunked_paper = chunk_text(retrieved_text, chunk_size=500, chunk_overlap=50)
+    
+    thesis_embedding = model.encode(thesis_text, convert_to_numpy=True).reshape(1, -1)
+    chunk_embeddings = np.array([model.encode(chunk, convert_to_numpy=True) for chunk in chunked_paper])
+    
+    chunk_index = faiss.IndexFlatL2(chunk_embeddings.shape[1])
+    chunk_index.add(chunk_embeddings)
+    _, top_chunk_indices = chunk_index.search(thesis_embedding, 3)
+    
+    relevant_chunks = [chunked_paper[idx] for idx in top_chunk_indices[0]]
+    return "\n".join(relevant_chunks)
+
+def explain_similarity(thesis_text, retrieved_papers):
+    """Uses an LLM to explain how the retrieved papers are similar to the input thesis."""
+    context = "\n\n".join(retrieved_papers)
+    prompt = (f"Given the thesis paper and retrieved research papers, explain how the ideas are similar.\n\n"
+              f"Thesis Paper:\n{thesis_text}\n\n"
+              f"Retrieved Research Papers:\n{context}\n\n"
+              f"Explanation:")
+    
+    response = llm_pipeline(prompt, max_length=500, do_sample=True)[0]['generated_text']
+    return response
+
+def search_similar_papers_with_rag(pdf_path, top_k=3):
+    """Finds the top-k similar research papers and explains their relevance."""
+    thesis_text = extract_text_from_pdf(pdf_path)
+    processed_thesis = preprocess_text(thesis_text)
+    query_embedding = model.encode(processed_thesis, convert_to_numpy=True).reshape(1, -1)
+    
+    distances, indices = index.search(query_embedding, top_k)
+    retrieved_papers = []
+    
+    print("\nTop similar research papers:")
+    for i in range(top_k):
+        filename = paper_files[indices[0][i]]
+        similarity_score = 1 - distances[0][i]
+        
+        metadata = metadata_dict.get(filename, {})
+        author = metadata.get("author", "Unknown")
+        title = metadata.get("title", "Unknown")
+        year = metadata.get("year", "Unknown")
+        institute = metadata.get("institute", "Unknown")
+        link = metadata.get("link", "Unavailable")
+        base_dir = "plagiarism_detection-data\\data\\"  # Change this to your actual directory
+      
+        file_path = base_dir + filename  # Ensuring correct relative path   
+        retrieved_text = extract_text_from_pdf(file_path)
+        relevant_text = retrieve_relevant_chunks(thesis_text, retrieved_text)
+        retrieved_papers.append(relevant_text)
+        
+        print(f"{i+1}. {title} ({year})")
+        print(f"   Author: {author}")
+        print(f"   Institute: {institute}")
+        print(f"   Similarity Score: {similarity_score:.4f}")
+        print(f"   Link: {link}\n")
+    
+    explanation = explain_similarity(thesis_text, retrieved_papers)
+    print("\n💡 **Explanation:**\n", explanation)
+
+# Example Usage
+search_similar_papers_with_rag("plagiarism_detection-data/data/g0pA_taskd.txt", top_k=3)

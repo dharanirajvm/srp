@@ -58,4 +58,4 @@ def search_similar_papers(pdf_path, top_k=3):
         print(f"{i+1}. {paper_files[indices[0][i]]} (Score: {similarity_score:.4f})")
 
 # Example Usage
-search_similar_papers("plagiarism_detection-data\data\g0pA_taskd.txt", top_k=3)
+search_similar_papers("2023176001_Mouliraj_A_K.pdf", top_k=3)

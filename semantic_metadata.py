@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 # Download required NLTK resources
 nltk.download('punkt')
 nltk.download('stopwords')
-
+nltk.download('punkt_tab')
 # Load pre-trained model and stopwords
 nlp = spacy.load("en_core_web_sm")
 stop_words = set(nltk.corpus.stopwords.words("english"))
